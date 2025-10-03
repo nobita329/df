@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # VPS 2 ka Tailscale IP
-VPS2_IP="100.122.29.128"
+VPS2_IP="100.97.202.93"
 
 # Port range (change karna ho to modify)
-START_PORT=19201
-END_PORT=19250
+START_PORT=19151
+END_PORT=19200
 
 # Install socat agar nahi hai
 if ! command -v socat &> /dev/null; then
