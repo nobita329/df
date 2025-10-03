@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# Dusre VPS ke IPs
-VPS2_IP="100.71.233.115"
+# VPS IPs
 VPS3_IP="100.117.193.1"
 VPS4_IP="100.97.202.93"
 VPS5_IP="100.122.29.128"
 
-# Install socat agar nahi hai
+# Install socat if missing
 if ! command -v socat &> /dev/null; then
     echo "Installing socat..."
     sudo apt update && sudo apt install -y socat
@@ -16,10 +15,6 @@ fi
 FORWARD_SCRIPT="/usr/local/bin/port-forward.sh"
 sudo bash -c "cat > $FORWARD_SCRIPT" <<'EOS'
 #!/bin/bash
-# VPS2 TCP only
-for port in $(seq 25601 25700); do
-    socat TCP-LISTEN:$port,fork,reuseaddr TCP:100.71.233.115:$port &
-done
 
 # VPS3 TCP+UDP
 for port in $(seq 19100 19150); do
@@ -48,7 +43,7 @@ sudo chmod +x $FORWARD_SCRIPT
 SERVICE_FILE="/etc/systemd/system/port-forward.service"
 sudo bash -c "cat > $SERVICE_FILE" <<EOL
 [Unit]
-Description=TCP+UDP Port Forward to multiple VPS via Tailscale
+Description=TCP+UDP Port Forward to VPS3,VPS4,VPS5 via Tailscale
 After=network.target
 
 [Service]
@@ -64,5 +59,5 @@ sudo systemctl daemon-reload
 sudo systemctl enable port-forward
 sudo systemctl restart port-forward
 
-echo "✅ Port forwarding setup complete!"
+echo "✅ Port forwarding setup complete (only new ranges active)!"
 sudo systemctl status port-forward --no-pager
