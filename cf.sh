@@ -5,7 +5,7 @@ VPS2_IP="100.122.29.128"
 
 # Port range (change karna ho to modify)
 START_PORT=19201
-END_PORT=19202
+END_PORT=19250
 
 # Install socat agar nahi hai
 if ! command -v socat &> /dev/null; then
