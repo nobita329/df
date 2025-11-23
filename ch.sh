@@ -6,26 +6,26 @@ DB_USER="ctrlpaneluser"
 DB_PASS="USE_YOUR_OWN_PASSWORD"
 
 echo ""
-echo ">>> CtrlPanel Auto Installer Starting..."
+echo ">>> CtrlPanel Installer Rolling..."
 echo ""
 
-read -p "Enter your domain or IP (example: panel.yourdomain.com or 1.2.3.4): " DOMAIN
-echo "Using domain: $DOMAIN"
+read -p "Enter your domain or IP: " DOMAIN
+echo "Using: $DOMAIN"
 echo ""
 
 # ----------------------------------------------------
-# CLEANUP SURY ON NOBLE
+# Remove bad Sury repo on noble
 # ----------------------------------------------------
 cleanup_old_sury() {
     if [ "$(lsb_release -sc)" = "noble" ]; then
-        echo ">>> Noble detected — removing old Sury repo..."
+        echo ">>> Purging old Sury repo (noble fix)"
         rm -f /etc/apt/sources.list.d/php.list
         rm -f /usr/share/keyrings/deb.sury.org-php.gpg
     fi
 }
 
 # ----------------------------------------------------
-# OS DETECT
+# Detect OS
 # ----------------------------------------------------
 detect_os() {
     . /etc/os-release
@@ -43,7 +43,7 @@ check_supported() {
 }
 
 # ----------------------------------------------------
-# INSTALL DEPS
+# Base packages
 # ----------------------------------------------------
 install_base_packages() {
     apt update -y
@@ -52,25 +52,25 @@ install_base_packages() {
 }
 
 # ----------------------------------------------------
-# PHP REPO AUTO-DETECT
+# PHP repo auto-detect
 # ----------------------------------------------------
 add_php_repo_auto() {
     SURY_SUPPORTED=("focal" "jammy" "bookworm" "bullseye" "buster")
 
     if printf "%s\n" "${SURY_SUPPORTED[@]}" | grep -q "^${CODENAME}$"; then
-        echo ">>> Sury repo OK for ${CODENAME}"
+        echo ">>> Enabling Sury for ${CODENAME}"
         wget -qO /usr/share/keyrings/deb.sury.org-php.gpg https://packages.sury.org/php/apt.gpg
         echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ ${CODENAME} main" \
             > /etc/apt/sources.list.d/php.list
         SKIP_PHP_REPO=0
     else
-        echo ">>> ${CODENAME} not supported → using system PHP"
+        echo ">>> ${CODENAME}: Sury not supported → Using system PHP"
         SKIP_PHP_REPO=1
     fi
 }
 
 # ----------------------------------------------------
-# REDIS REPO
+# Redis Repo
 # ----------------------------------------------------
 add_redis_repo() {
     curl -fsSL https://packages.redis.io/gpg | gpg --dearmor \
@@ -81,7 +81,7 @@ add_redis_repo() {
 }
 
 # ----------------------------------------------------
-# PHP AUTO INSTALL
+# PHP Auto Install
 # ----------------------------------------------------
 install_php_auto() {
     apt update -y
@@ -97,7 +97,7 @@ enable_redis() {
 }
 
 # ----------------------------------------------------
-# COMPOSER
+# Composer
 # ----------------------------------------------------
 install_composer() {
     curl -sS https://getcomposer.org/installer \
@@ -105,7 +105,7 @@ install_composer() {
 }
 
 # ----------------------------------------------------
-# CTRLPANEL CLONE + BUILD
+# CtrlPanel Clone
 # ----------------------------------------------------
 clone_ctrlpanel() {
     mkdir -p /var/www/ctrlpanel
@@ -120,18 +120,19 @@ laravel_build() {
 }
 
 # ----------------------------------------------------
-# SSL CERT
+# SSL
 # ----------------------------------------------------
 setup_ssl() {
     mkdir -p /etc/certs/ctrlpanel
     cd /etc/certs/ctrlpanel
+
     openssl req -new -newkey rsa:4096 -nodes -days 3650 -x509 \
         -subj "/C=NA/ST=NA/L=NA/O=NA/CN=${DOMAIN}" \
         -keyout privkey.pem -out fullchain.pem
 }
 
 # ----------------------------------------------------
-# DATABASE
+# MariaDB
 # ----------------------------------------------------
 setup_mariadb() {
     mariadb -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';"
@@ -141,7 +142,7 @@ setup_mariadb() {
 }
 
 # ----------------------------------------------------
-# NGINX
+# Nginx Setup
 # ----------------------------------------------------
 setup_nginx() {
 cat >/etc/nginx/sites-available/ctrlpanel.conf <<EOF
@@ -179,16 +180,15 @@ server {
 }
 EOF
 
-    ln -sf /etc/nginx/sites-available/ctrlpanel.conf /etc/nginx/sites-enabled/ctrlpanel.conf
+    ln -sf /etc/nginx/sites-available/ctrlpanel.conf /etc/nginx/sites-enabled/
     nginx -t
     systemctl restart nginx
 }
 
 # ----------------------------------------------------
-# PERMISSIONS + CRON
+# Permissions + Cron
 # ----------------------------------------------------
 setup_permissions_and_cron() {
-
     chown -R www-data:www-data /var/www/ctrlpanel
     chmod -R 775 /var/www/ctrlpanel/storage /var/www/ctrlpanel/bootstrap/cache
 
@@ -202,57 +202,35 @@ setup_permissions_and_cron() {
 }
 
 # ----------------------------------------------------
-# QUEUE WORKER — FINAL FIXED VERSION
+# EXACT QUEUE SERVICE (AS YOU REQUESTED)
 # ----------------------------------------------------
-setup_queue_worker() {
+create_queue_service() {
+echo ">>> Creating exact ctrlpanel.service file..."
 
-    echo ">>> Creating CtrlPanel queue worker..."
+cat >/etc/systemd/system/ctrlpanel.service <<'EOF'
+# Ctrlpanel Queue Worker File
+# ----------------------------------
 
-cat >/etc/systemd/system/ctrlpanel.service <<EOF
 [Unit]
 Description=Ctrlpanel Queue Worker
-After=network.target mariadb.service nginx.service redis-server.service
 
 [Service]
 User=www-data
 Group=www-data
 Restart=always
 ExecStart=/usr/bin/php /var/www/ctrlpanel/artisan queue:work --sleep=3 --tries=3
-RestartSec=5
+StartLimitBurst=0
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable ctrlpanel.service
-    systemctl start ctrlpanel.service
-    systemctl status ctrlpanel.service --no-pager || true
+systemctl daemon-reload
+systemctl enable --now ctrlpanel.service
 }
 
 # ----------------------------------------------------
-# FULL HEALTH FIX
-# ----------------------------------------------------
-full_health_fix() {
-
-    PHP_PATH=$(command -v php)
-
-    chown -R www-data:www-data /var/www/ctrlpanel
-    chmod -R 775 /var/www/ctrlpanel/storage /var/www/ctrlpanel/bootstrap/cache
-
-    systemctl enable --now cron || true
-
-    (crontab -l 2>/dev/null | grep -v "schedule:run" ; \
-        echo "* * * * * ${PHP_PATH} /var/www/ctrlpanel/artisan schedule:run >> /dev/null 2>&1") | crontab -
-
-    sudo -u www-data ${PHP_PATH} /var/www/ctrlpanel/artisan schedule:run || true
-
-    systemctl enable --now ctrlpanel.service || true
-    systemctl restart ctrlpanel.service || true
-}
-
-# ----------------------------------------------------
-# MAIN
+# Main
 # ----------------------------------------------------
 main() {
     cleanup_old_sury
@@ -271,17 +249,15 @@ main() {
     setup_mariadb
     setup_nginx
     setup_permissions_and_cron
-    setup_queue_worker
-    full_health_fix
+    create_queue_service
 
     echo ""
     echo "==========================================="
-    echo " CtrlPanel Installation Completed"
-    echo " URL       : https://${DOMAIN}"
-    echo " DB User   : ${DB_USER}"
-    echo " DB Pass   : ${DB_PASS}"
+    echo " INSTALLATION COMPLETE "
+    echo " URL: https://${DOMAIN}"
+    echo " DB User: ${DB_USER}"
+    echo " DB Pass: ${DB_PASS}"
     echo "==========================================="
-    echo ""
 }
 
 main "$@"
