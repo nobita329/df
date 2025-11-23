@@ -346,47 +346,6 @@ EOF
 # ----------------------------------------------------
 # AUTO CONFIGURE ENVIRONMENT
 # ----------------------------------------------------
-auto_configure_env() {
-    echo ">>> Auto-configuring environment..."
-    cd /var/www/ctrlpanel
-    
-    # Copy environment file if not exists
-    if [ -f .env.example ] && [ ! -f .env ]; then
-        cp .env.example .env
-        echo ">>> Created .env file from example"
-    fi
-    
-    # Update .env with actual values
-    if [ -f .env ]; then
-        # Generate application key
-        php artisan key:generate --force
-        
-        # Update database configuration
-        sed -i "s/DB_DATABASE=.*/DB_DATABASE=${DB_NAME}/" .env
-        sed -i "s/DB_USERNAME=.*/DB_USERNAME=${DB_USER}/" .env
-        sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASS}/" .env
-        sed -i "s/APP_URL=.*/APP_URL=https:\/\/${DOMAIN}/" .env
-        
-        # Set other important settings
-        sed -i "s/APP_ENV=.*/APP_ENV=production/" .env
-        sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
-        sed -i "s/QUEUE_CONNECTION=.*/QUEUE_CONNECTION=redis/" .env
-        
-        echo ">>> .env file configured"
-        
-        # Run migrations
-        echo ">>> Running database migrations..."
-        php artisan migrate --force --no-interaction
-        
-        # Clear cache
-        php artisan config:clear
-        php artisan cache:clear
-        
-        echo ">>> Environment setup completed"
-    else
-        echo ">>> WARNING: .env file not found, manual configuration required"
-    fi
-}
 
 # ----------------------------------------------------
 # MAIN
