@@ -1,208 +1,409 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
 
-DB_NAME="ctrlpanel"
-DB_USER="ctrlpaneluser"
-DB_PASS="ctrlpanelpass123"  # Default password
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-echo ""
-echo ">>> CtrlPanel Installer Starting..."
-echo ""
-
-read -p "Enter your domain or IP: " DOMAIN
-echo "Using: $DOMAIN"
-echo ""
-
-# ----------------------------------------------------
-# CLEANUP SURY ON NOBLE
-# ----------------------------------------------------
-cleanup_old_sury() {
-    if [ "$(lsb_release -sc)" = "noble" ]; then
-        echo ">>> Noble detected — removing bad Sury repo..."
-        rm -f /etc/apt/sources.list.d/php.list 2>/dev/null || true
-        rm -f /usr/share/keyrings/deb.sury.org-php.gpg 2>/dev/null || true
-    fi
+# Function to print status
+print_status() {
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-# ----------------------------------------------------
-# OS DETECT
-# ----------------------------------------------------
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Function to get user input
+get_domain() {
+    echo -e "\n${YELLOW}=== Domain Configuration ===${NC}"
+    echo -e "Please enter your domain name (e.g., panel.yourdomain.com)"
+    echo -e "This will be used for Nginx configuration and SSL certificates\n"
+    
+    while true; do
+        read -p "Enter your domain: " DOMAIN_NAME
+        
+        if [ -z "$DOMAIN_NAME" ]; then
+            print_error "Domain name cannot be empty. Please try again."
+        elif ! echo "$DOMAIN_NAME" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+            print_error "Invalid domain format. Please enter a valid domain (e.g., panel.example.com)"
+        else
+            break
+        fi
+    done
+    
+    # Ask for SSL certificate type
+    echo -e "\n${YELLOW}SSL Certificate Type:${NC}"
+    echo "1) Generate self-signed certificate (for testing)"
+    echo "2) Use Let's Encrypt (for production - requires valid domain)"
+    echo "3) Skip SSL setup (configure manually later)"
+    
+    while true; do
+        read -p "Choose option [1-3]: " SSL_OPTION
+        case $SSL_OPTION in
+            1) SSL_TYPE="selfsigned"; break ;;
+            2) SSL_TYPE="letsencrypt"; break ;;
+            3) SSL_TYPE="skip"; break ;;
+            *) print_error "Invalid option. Please choose 1, 2, or 3." ;;
+        esac
+    done
+}
+
+# Function to detect OS
 detect_os() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        OS="$ID"
-        VER="$VERSION_ID"
-        CODENAME=$(lsb_release -sc)
+        OS=$ID
+        OS_VERSION=$VERSION_ID
+    elif [ -f /etc/redhat-release ]; then
+        OS="rhel"
+        OS_VERSION=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release)
     else
-        echo "ERROR: Cannot detect operating system"
+        print_error "Unsupported operating system"
         exit 1
     fi
 }
 
-check_supported() {
-    case "$OS" in
-        ubuntu) [[ "$VER" =~ ^(20.04|22.04|24.04)$ ]] || { echo "Unsupported Ubuntu version: $VER"; exit 1; } ;;
-        debian) [[ "$VER" =~ ^(10|11|12)$ ]] || { echo "Unsupported Debian version: $VER"; exit 1; } ;;
-        *) echo "Unsupported OS: $OS"; exit 1 ;;
-    esac
-    echo ">>> Detected: $OS $VER ($CODENAME)"
-}
-
-# ----------------------------------------------------
-# BASE PACKAGES
-# ----------------------------------------------------
-install_base_packages() {
-    echo ">>> Updating system and installing base packages..."
-    apt update -y
-    apt install -y software-properties-common curl apt-transport-https \
-        ca-certificates gnupg lsb-release wget sudo git mariadb-server
-}
-
-# ----------------------------------------------------
-# PHP AUTO-DETECT (NOBLE SAFE)
-# ----------------------------------------------------
-add_php_repo_auto() {
-    SURY_SUPPORTED=("focal" "jammy" "bookworm" "bullseye" "buster")
-
-    if printf "%s\n" "${SURY_SUPPORTED[@]}" | grep -q "^${CODENAME}$"; then
-        echo ">>> Adding Sury PHP repo for ${CODENAME}"
-        wget -qO /usr/share/keyrings/deb.sury.org-php.gpg https://packages.sury.org/php/apt.gpg
-        echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ ${CODENAME} main" \
-            > /etc/apt/sources.list.d/php.list
-        SKIP_PHP_REPO=0
+# Function to get web user and group
+get_web_user() {
+    if [ "$OS" = "debian" ] || [ "$OS" = "ubuntu" ]; then
+        echo "www-data"
+    elif [ "$OS" = "rhel" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ] || [ "$OS" = "rocky" ] || [ "$OS" = "almalinux" ]; then
+        echo "nginx"
+    elif [ "$OS" = "alpine" ]; then
+        echo "nginx"
     else
-        echo ">>> ${CODENAME} not supported by Sury — using system PHP."
-        SKIP_PHP_REPO=1
+        echo "www-data"
     fi
 }
 
-# ----------------------------------------------------
-# REDIS REPO
-# ----------------------------------------------------
-add_redis_repo() {
-    echo ">>> Adding Redis repository..."
-    curl -fsSL https://packages.redis.io/gpg | gpg --dearmor \
-        -o /usr/share/keyrings/redis-archive-keyring.gpg
+# Function to install dependencies for Debian/Ubuntu
+install_debian() {
+    echo -e "${YELLOW}Detected Debian-based system ($OS $OS_VERSION)${NC}"
+    
+    # Install basic dependencies
+    apt -y install software-properties-common curl apt-transport-https ca-certificates gnupg lsb-release
 
-    echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb ${CODENAME} main" \
-        > /etc/apt/sources.list.d/redis.list
-}
+    # Add additional repositories for PHP
+    wget -O /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
+    echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/php.list
 
-# ----------------------------------------------------
-# PHP INSTALL AUTO-SWITCH
-# ----------------------------------------------------
-install_php_auto() {
-    echo ">>> Installing PHP and dependencies..."
+    # Add Redis official APT repository
+    curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
+
+    # Update repositories list
     apt update -y
-    if [ "${SKIP_PHP_REPO:-1}" -eq 1 ]; then
-        apt install -y php php-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip,intl} nginx redis-server
-        PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;")
-    else
-        apt install -y php8.3 php8.3-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip,intl,redis} nginx redis-server
-        PHP_VERSION="8.3"
+
+    # Install Dependencies
+    apt install -y php8.3 php8.3-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip,intl,redis} mariadb-server nginx git redis-server
+}
+
+# Function to install dependencies for RHEL/CentOS
+install_rhel() {
+    echo -e "${YELLOW}Detected RHEL-based system ($OS $OS_VERSION)${NC}"
+    
+    # Install EPEL repository
+    dnf install -y epel-release
+    
+    # Install Remi repository for PHP
+    dnf install -y https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm
+    
+    # Enable PHP 8.3 stream
+    dnf module enable -y php:remi-8.3
+    
+    # Install basic dependencies
+    dnf install -y curl wget gnupg2
+    
+    # Add Redis repository
+    if [ ${OS_VERSION%%.*} -eq 8 ] || [ ${OS_VERSION%%.*} -eq 9 ]; then
+        dnf install -y https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm
+        dnf module enable -y redis:remi-7.2
     fi
-    echo ">>> PHP $PHP_VERSION installed"
+    
+    # Install packages
+    dnf install -y php php-{common,cli,gd,mysqlnd,mbstring,bcmath,xml,fpm,curl,zip,intl,redis} mariadb-server nginx git redis
 }
 
-enable_redis() {
-    echo ">>> Enabling Redis..."
-    systemctl enable --now redis-server
+# Function to install dependencies for Alpine Linux
+install_alpine() {
+    echo -e "${YELLOW}Detected Alpine Linux ($OS_VERSION)${NC}"
+    
+    # Update repositories
+    apk update
+    
+    # Install dependencies
+    apk add php83 php83-{common,cli,gd,mysqli,mbstring,bcmath,xml,fpm,curl,zip,intl,redis} mariadb nginx git redis
 }
 
-# ----------------------------------------------------
-# COMPOSER
-# ----------------------------------------------------
+# Function to setup services
+setup_services() {
+    print_status "Setting up and enabling services..."
+    
+    # Enable and start Redis
+    if systemctl enable --now redis-server 2>/dev/null; then
+        print_success "Redis server enabled and started"
+    elif systemctl enable --now redis 2>/dev/null; then
+        print_success "Redis service enabled and started"
+    else
+        print_warning "Could not enable Redis service"
+    fi
+    
+    # Enable and start MariaDB/MySQL
+    if systemctl enable --now mariadb 2>/dev/null; then
+        print_success "MariaDB enabled and started"
+    elif systemctl enable --now mysql 2>/dev/null; then
+        print_success "MySQL enabled and started"
+    else
+        print_warning "Could not enable database service"
+    fi
+    
+    # Enable and start Nginx
+    if systemctl enable --now nginx 2>/dev/null; then
+        print_success "Nginx enabled and started"
+    else
+        print_warning "Could not enable Nginx service"
+    fi
+    
+    # Enable and start PHP-FPM
+    if systemctl enable --now php8.3-fpm 2>/dev/null; then
+        print_success "PHP 8.3 FPM enabled and started"
+    elif systemctl enable --now php-fpm 2>/dev/null; then
+        print_success "PHP FPM enabled and started"
+    else
+        print_warning "Could not enable PHP-FPM service"
+    fi
+}
+
+# Function to install Composer
 install_composer() {
-    echo ">>> Installing Composer..."
-    curl -sS https://getcomposer.org/installer \
-        | php -- --install-dir=/usr/local/bin --filename=composer
+    print_status "Installing Composer..."
+    
+    if curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer; then
+        print_success "Composer installed successfully"
+        composer --version 2>/dev/null
+    else
+        print_error "Failed to install Composer"
+        return 1
+    fi
 }
 
-# ----------------------------------------------------
-# CTRLPANEL CLONE + BUILD
-# ----------------------------------------------------
-clone_ctrlpanel() {
-    echo ">>> Cloning CtrlPanel..."
+# Function to setup application
+setup_application() {
+    print_status "Setting up CtrlPanel application..."
+    
+    # Create directory and clone repository
     mkdir -p /var/www/ctrlpanel
     cd /var/www/ctrlpanel
+    
     if [ -d ".git" ]; then
-        echo ">>> Existing repository found, pulling latest changes..."
-        git pull origin main || true
+        print_warning "CtrlPanel already exists, pulling latest changes..."
+        git pull origin main
     else
-        git clone https://github.com/Ctrlpanel-gg/panel.git . || { echo "Git clone failed"; exit 1; }
+        print_status "Cloning CtrlPanel repository..."
+        git clone https://github.com/Ctrlpanel-gg/panel.git ./
+    fi
+    
+    if [ $? -eq 0 ]; then
+        print_success "CtrlPanel application setup completed"
+    else
+        print_error "Failed to setup CtrlPanel application"
+        return 1
     fi
 }
 
-laravel_build() {
-    echo ">>> Building Laravel application..."
-    cd /var/www/ctrlpanel
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
-    php artisan storage:link
+# Function to setup MariaDB database
+setup_database() {
+    print_status "Setting up MariaDB database..."
+    
+    # Database configuration
+    DB_NAME=ctrlpanel
+    DB_USER=ctrlpaneluser
+    DB_PASS=ctrlpanel
+    
+    # Start MariaDB if not running
+    if ! systemctl is-active --quiet mariadb && ! systemctl is-active --quiet mysql; then
+        print_status "Starting database service..."
+        systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null
+    fi
+    
+    # Secure MySQL installation (optional - for production you might want this)
+    # mysql_secure_installation
+    
+    # Create database and user
+    print_status "Creating database and user..."
+    
+    if mariadb -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';" 2>/dev/null; then
+        print_success "Database user created"
+    else
+        print_warning "Could not create user (might already exist)"
+    fi
+    
+    if mariadb -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME};" 2>/dev/null; then
+        print_success "Database created"
+    else
+        print_warning "Could not create database (might already exist)"
+    fi
+    
+    if mariadb -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'127.0.0.1' WITH GRANT OPTION;" 2>/dev/null; then
+        print_success "Privileges granted"
+    else
+        print_warning "Could not grant privileges"
+    fi
+    
+    mariadb -e "FLUSH PRIVILEGES;" 2>/dev/null
+    print_success "Database '${DB_NAME}' setup completed with user '${DB_USER}'"
 }
 
-# ----------------------------------------------------
-# SSL (Self-signed for initial setup)
-# ----------------------------------------------------
+# Function to setup application dependencies and permissions
+setup_app_dependencies() {
+    print_status "Installing PHP dependencies..."
+    
+    cd /var/www/ctrlpanel
+    
+    # Install Composer dependencies
+    if COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader; then
+        print_success "Composer dependencies installed"
+    else
+        print_error "Failed to install Composer dependencies"
+        return 1
+    fi
+    
+    # Create storage link
+    print_status "Creating storage link..."
+    if php artisan storage:link; then
+        print_success "Storage link created"
+    else
+        print_warning "Could not create storage link"
+    fi
+    
+    # Setup permissions
+    print_status "Setting up permissions..."
+    WEB_USER=$(get_web_user)
+    
+    chown -R $WEB_USER:$WEB_USER /var/www/ctrlpanel/
+    chmod -R 755 storage/ bootstrap/cache/
+    
+    # Fix ownership of specific directories
+    chown -R $WEB_USER:$WEB_USER storage/ bootstrap/cache/
+    chmod -R 775 storage/ bootstrap/cache/
+    
+    print_success "Permissions configured for user: $WEB_USER"
+}
+
+# Function to setup SSL certificates
 setup_ssl() {
-    echo ">>> Setting up temporary SSL certificates..."
+    print_status "Setting up SSL certificates..."
+    
+    case $SSL_TYPE in
+        "selfsigned")
+            # Create directory for certificates
+            mkdir -p /etc/certs/ctrlpanel
+            cd /etc/certs/ctrlpanel
+            
+            # Generate self-signed certificate
+            print_status "Generating self-signed SSL certificate..."
+            openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
+                -subj "/C=NA/ST=NA/L=NA/O=NA/CN=$DOMAIN_NAME" \
+                -keyout privkey.pem -out fullchain.pem
+                
+            if [ $? -eq 0 ]; then
+                print_success "Self-signed SSL certificate generated"
+                SSL_CERT="/etc/certs/ctrlpanel/fullchain.pem"
+                SSL_KEY="/etc/certs/ctrlpanel/privkey.pem"
+            else
+                print_error "Failed to generate SSL certificate"
+                return 1
+            fi
+            ;;
+            
+        "letsencrypt")
+            print_status "Setting up Let's Encrypt SSL certificate..."
+            
+            # Install certbot based on OS
+            if [ "$OS" = "debian" ] || [ "$OS" = "ubuntu" ]; then
+                apt install -y certbot python3-certbot-nginx
+            elif [ "$OS" = "rhel" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ] || [ "$OS" = "rocky" ] || [ "$OS" = "almalinux" ]; then
+                dnf install -y certbot python3-certbot-nginx
+            fi
+            
+            # First, create a basic nginx config without SSL to allow domain verification
+            create_nginx_config "http"
+            
+            # Test nginx configuration
+            if nginx -t; then
+                systemctl reload nginx
+                
+                # Obtain SSL certificate
+                if certbot --nginx -d $DOMAIN_NAME --non-interactive --agree-tos --register-unsafely-without-email; then
+                    print_success "Let's Encrypt SSL certificate obtained"
+                    SSL_CERT="/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem"
+                    SSL_KEY="/etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem"
+                else
+                    print_error "Failed to obtain Let's Encrypt certificate"
+                    print_warning "Falling back to self-signed certificate"
+                    setup_selfsigned_ssl
+                fi
+            else
+                print_error "Nginx configuration test failed"
+                return 1
+            fi
+            ;;
+            
+        "skip")
+            print_warning "SSL setup skipped"
+            SSL_CERT=""
+            SSL_KEY=""
+            ;;
+    esac
+}
+
+# Function to setup self-signed SSL as fallback
+setup_selfsigned_ssl() {
     mkdir -p /etc/certs/ctrlpanel
     cd /etc/certs/ctrlpanel
-
-    # Generate self-signed certificate for initial setup
-    openssl req -new -newkey rsa:4096 -nodes -days 365 -x509 \
-        -subj "/C=US/ST=State/L=City/O=Organization/CN=${DOMAIN}" \
+    
+    openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 \
+        -subj "/C=NA/ST=NA/L=NA/O=NA/CN=$DOMAIN_NAME" \
         -keyout privkey.pem -out fullchain.pem
-    
-    chmod 600 privkey.pem
+        
+    SSL_CERT="/etc/certs/ctrlpanel/fullchain.pem"
+    SSL_KEY="/etc/certs/ctrlpanel/privkey.pem"
 }
 
-# ----------------------------------------------------
-# DATABASE
-# ----------------------------------------------------
-setup_mariadb() {
-    echo ">>> Setting up database..."
+# Function to create nginx configuration
+create_nginx_config() {
+    CONFIG_TYPE=$1
+    NGINX_CONF="/etc/nginx/sites-available/ctrlpanel.conf"
     
-    # Ensure MariaDB is running
-    systemctl enable --now mariadb
+    print_status "Creating Nginx configuration for $DOMAIN_NAME..."
     
-    # Secure installation if not already done
-    if ! mariadb -e "SELECT 1" >/dev/null 2>&1; then
-        echo ">>> Securing MariaDB installation..."
-        mysql_secure_installation <<EOF
+    # Create nginx configuration
+    cat > $NGINX_CONF << EOF
+# CtrlPanel Nginx Configuration
+# Auto-generated by installation script
 
-n
-y
-y
-y
-y
-EOF
-    fi
-
-    mariadb -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';" || { echo "Database user creation failed"; exit 1; }
-    mariadb -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME};" || { echo "Database creation failed"; exit 1; }
-    mariadb -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'127.0.0.1' WITH GRANT OPTION;" || { echo "Grant privileges failed"; exit 1; }
-    mariadb -e "FLUSH PRIVILEGES;" || { echo "Flush privileges failed"; exit 1; }
-    
-    echo ">>> Database setup completed"
-}
-
-# ----------------------------------------------------
-# NGINX CONFIG
-# ----------------------------------------------------
-setup_nginx() {
-    echo ">>> Configuring nginx..."
-
-    # Create nginx config
-    cat > /etc/nginx/sites-available/ctrlpanel.conf <<EOF
 server {
+    # Redirect HTTP to HTTPS
     listen 80;
-    server_name ${DOMAIN};
+    server_name $DOMAIN_NAME;
     return 301 https://\$server_name\$request_uri;
 }
 
 server {
+    # Main HTTPS server
     listen 443 ssl http2;
-    server_name ${DOMAIN};
+    server_name $DOMAIN_NAME;
 
     root /var/www/ctrlpanel/public;
     index index.php;
@@ -216,9 +417,9 @@ server {
 
     sendfile off;
 
-    # SSL Configuration - Using self-signed for initial setup
-    ssl_certificate /etc/certs/ctrlpanel/fullchain.pem;
-    ssl_certificate_key /etc/certs/ctrlpanel/privkey.pem;
+    # SSL Configuration
+    ssl_certificate ${SSL_CERT:-/etc/certs/ctrlpanel/fullchain.pem};
+    ssl_certificate_key ${SSL_KEY:-/etc/certs/ctrlpanel/privkey.pem};
     ssl_session_cache shared:SSL:10m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
@@ -259,135 +460,255 @@ server {
 }
 EOF
 
-    # Enable site
-    ln -sf /etc/nginx/sites-available/ctrlpanel.conf /etc/nginx/sites-enabled/ 2>/dev/null || true
-    
-    # Remove default nginx site
-    rm -f /etc/nginx/sites-enabled/default
-    
-    echo ">>> Testing nginx configuration..."
-    nginx -t || { echo "Nginx configuration test failed"; exit 1; }
-    
-    # Enable and restart services
-    PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;")
-    systemctl enable nginx php${PHP_VERSION}-fpm
-    systemctl restart nginx php${PHP_VERSION}-fpm
-    
-    echo ">>> Nginx configuration completed"
-}
-
-# ----------------------------------------------------
-# PERMISSIONS + CRON
-# ----------------------------------------------------
-setup_permissions_and_cron() {
-    echo ">>> Setting up permissions and cron..."
-
-    chown -R www-data:www-data /var/www/ctrlpanel
-    chmod -R 775 /var/www/ctrlpanel/storage /var/www/ctrlpanel/bootstrap/cache
-
-    # Install cron if not present
-    if ! systemctl is-active --quiet cron; then
-        apt install -y cron
+    # Enable the site
+    if [ -d "/etc/nginx/sites-enabled" ]; then
+        ln -sf $NGINX_CONF /etc/nginx/sites-enabled/ctrlpanel.conf
     fi
-    systemctl enable --now cron
-
-    PHP_BIN=$(command -v php)
-
-    # Add artisan scheduler to crontab
-    (crontab -l 2>/dev/null | grep -v "schedule:run" ; \
-        echo "* * * * * ${PHP_BIN} /var/www/ctrlpanel/artisan schedule:run --no-interaction >> /dev/null 2>&1") | crontab -
-        
-    echo ">>> Cron job installed for scheduler"
+    
+    # For RHEL-based systems, sites are included differently
+    if [ "$OS" = "rhel" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ] || [ "$OS" = "rocky" ] || [ "$OS" = "almalinux" ]; then
+        # Ensure nginx.conf includes sites
+        if ! grep -q "sites-enabled" /etc/nginx/nginx.conf; then
+            sed -i '/http {/a\    include /etc/nginx/sites-enabled/*.conf;' /etc/nginx/nginx.conf
+        fi
+    fi
 }
 
-# ----------------------------------------------------
-# AUTO-SETUP QUEUE SERVICE
-# ----------------------------------------------------
-auto_setup_queue_service() {
-    echo ">>> Setting up queue worker service..."
+# Function to setup cron jobs
+setup_cron() {
+    print_status "Setting up cron jobs..."
+    
+    # Install cron if not installed
+    if [ "$OS" = "debian" ] || [ "$OS" = "ubuntu" ]; then
+        apt install -y cron
+    elif [ "$OS" = "rhel" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ] || [ "$OS" = "rocky" ] || [ "$OS" = "almalinux" ]; then
+        dnf install -y cronie
+    elif [ "$OS" = "alpine" ]; then
+        apk add dcron
+    fi
+    
+    # Enable and start cron service
+    if systemctl enable --now cron 2>/dev/null || systemctl enable --now crond 2>/dev/null; then
+        print_success "Cron service enabled and started"
+    else
+        print_warning "Could not enable cron service"
+    fi
+    
+    # Add Laravel scheduler cron job
+    CRON_JOB="* * * * * php /var/www/ctrlpanel/artisan schedule:run >> /dev/null 2>&1"
+    
+    # Check if cron job already exists
+    if crontab -l 2>/dev/null | grep -q "artisan schedule:run"; then
+        print_warning "Cron job already exists"
+    else
+        (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+        print_success "Cron job added for Laravel scheduler"
+    fi
+}
 
-    PHP_BIN=$(command -v php)
+# Function to setup systemd service for queue worker
+setup_queue_worker() {
+    print_status "Setting up CtrlPanel queue worker service..."
+    
+    WEB_USER=$(get_web_user)
+    SERVICE_FILE="/etc/systemd/system/ctrlpanel.service"
+    
+    # Create systemd service file
+    cat > $SERVICE_FILE << EOF
+# Ctrlpanel Queue Worker File
+# ----------------------------------
 
-    cat > /etc/systemd/system/ctrlpanel.service <<EOF
 [Unit]
 Description=Ctrlpanel Queue Worker
-After=network.target mariadb.service redis-server.service
 
 [Service]
-Type=simple
-User=www-data
-Group=www-data
+# On some systems the user and group might be different.
+# Some systems use \`apache\` or \`nginx\` as the user and group.
+User=$WEB_USER
+Group=$WEB_USER
 Restart=always
-RestartSec=3
-StartLimitInterval=0
-ExecStart=${PHP_BIN} /var/www/ctrlpanel/artisan queue:work --sleep=3 --tries=3 --max-time=3600
-WorkingDirectory=/var/www/ctrlpanel
-StandardOutput=journal
-StandardError=journal
+ExecStart=/usr/bin/php /var/www/ctrlpanel/artisan queue:work --sleep=3 --tries=3
+StartLimitBurst=0
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable ctrlpanel.service
-    systemctl start ctrlpanel.service
-    
-    # Wait a moment and check status
-    sleep 2
-    if systemctl is-active --quiet ctrlpanel.service; then
-        echo ">>> Queue worker service is running"
+    if [ $? -eq 0 ]; then
+        print_success "CtrlPanel service file created at $SERVICE_FILE"
     else
-        echo ">>> WARNING: Queue worker service failed to start"
-        systemctl status ctrlpanel.service --no-pager || true
+        print_error "Failed to create service file"
+        return 1
+    fi
+    
+    # Reload systemd and enable service
+    systemctl daemon-reload
+    
+    if systemctl enable --now ctrlpanel.service; then
+        print_success "CtrlPanel queue worker service enabled and started"
+    else
+        print_error "Failed to enable CtrlPanel queue worker service"
+        return 1
     fi
 }
 
-# ----------------------------------------------------
-# AUTO CONFIGURE ENVIRONMENT
-# ----------------------------------------------------
-
-# ----------------------------------------------------
-# MAIN
-# ----------------------------------------------------
-main() {
-    echo ">>> Starting CtrlPanel installation..."
+# Function to finalize nginx setup
+finalize_nginx() {
+    print_status "Finalizing Nginx configuration..."
     
-    cleanup_old_sury
+    # Test nginx configuration
+    if nginx -t; then
+        print_success "Nginx configuration test passed"
+        
+        # Reload nginx
+        if systemctl reload nginx; then
+            print_success "Nginx reloaded successfully"
+        else
+            print_error "Failed to reload nginx"
+            return 1
+        fi
+    else
+        print_error "Nginx configuration test failed"
+        return 1
+    fi
+}
+
+# Function to display final information
+display_info() {
+    echo -e "\n${GREEN}=== Installation Completed Successfully ===${NC}"
+    echo -e "${YELLOW}Summary:${NC}"
+    echo -e "• Domain: $DOMAIN_NAME"
+    echo -e "• OS: $OS $OS_VERSION"
+    echo -e "• Database: MariaDB/MySQL"
+    echo -e "• Web Server: Nginx"
+    echo -e "• PHP: 8.3"
+    echo -e "• Redis: Installed and running"
+    echo -e "• Application: CtrlPanel installed in /var/www/ctrlpanel"
+    echo -e "• Database Name: ctrlpanel"
+    echo -e "• Database User: ctrlpaneluser"
+    echo -e "• Web User: $(get_web_user)"
+    echo -e "• Queue Worker: Enabled via systemd"
+    echo -e "• Cron Jobs: Configured for scheduler"
+    echo -e "• SSL Type: $SSL_TYPE"
+    
+    if [ "$SSL_TYPE" = "selfsigned" ]; then
+        echo -e "• SSL Certificate: Self-signed (for testing)"
+    elif [ "$SSL_TYPE" = "letsencrypt" ]; then
+        echo -e "• SSL Certificate: Let's Encrypt (production ready)"
+    fi
+    
+    echo -e "\n${YELLOW}Next Steps:${NC}"
+    echo -e "1. Update DNS records to point $DOMAIN_NAME to your server IP"
+    echo -e "2. Setup application environment variables (.env file)"
+    echo -e "3. Run database migrations: php artisan migrate"
+    echo -e "4. Configure firewall to allow HTTP/HTTPS traffic"
+    
+    if [ "$SSL_TYPE" = "selfsigned" ]; then
+        echo -e "5. ${YELLOW}Note: Using self-signed certificate - browsers will show security warning${NC}"
+        echo -e "6. For production, replace with valid SSL certificate"
+    fi
+    
+    echo -e "\n${GREEN}Access Information:${NC}"
+    echo -e "• Website: https://$DOMAIN_NAME"
+    echo -e "• Application Directory: /var/www/ctrlpanel"
+    echo -e "• Nginx Config: /etc/nginx/sites-available/ctrlpanel.conf"
+    
+    echo -e "\n${GREEN}Services Status:${NC}"
+    systemctl is-active --quiet mariadb && echo "• MariaDB: ✅ Running" || systemctl is-active --quiet mysql && echo "• MySQL: ✅ Running" || echo "• Database: ❌ Stopped"
+    systemctl is-active --quiet nginx && echo "• Nginx: ✅ Running" || echo "• Nginx: ❌ Stopped"
+    systemctl is-active --quiet redis-server && echo "• Redis: ✅ Running" || systemctl is-active --quiet redis && echo "• Redis: ✅ Running" || echo "• Redis: ❌ Stopped"
+    systemctl is-active --quiet ctrlpanel && echo "• Queue Worker: ✅ Running" || echo "• Queue Worker: ❌ Stopped"
+    systemctl is-active --quiet cron && echo "• Cron: ✅ Running" || systemctl is-active --quiet crond && echo "• Cron: ✅ Running" || echo "• Cron: ❌ Stopped"
+    
+    echo -e "\n${YELLOW}Useful Commands:${NC}"
+    echo -e "• Check queue status: systemctl status ctrlpanel"
+    echo -e "• View logs: journalctl -u ctrlpanel -f"
+    echo -e "• Restart queue: systemctl restart ctrlpanel"
+    echo -e "• Check cron jobs: crontab -l"
+    echo -e "• Test website: curl -I https://$DOMAIN_NAME"
+}
+
+# Main script
+main() {
+    echo -e "${GREEN}Starting CtrlPanel Multi-OS Installation...${NC}"
+    
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        print_error "Please run as root"
+        exit 1
+    fi
+    
+    # Get domain information
+    get_domain
+    
+    # Detect OS
     detect_os
-    check_supported
-
-    install_base_packages
-    add_php_repo_auto
-    add_redis_repo
-    install_php_auto
-    enable_redis
+    
+    echo -e "${YELLOW}Operating System: $OS $OS_VERSION${NC}"
+    echo -e "${YELLOW}Domain: $DOMAIN_NAME${NC}"
+    echo -e "${YELLOW}SSL Type: $SSL_TYPE${NC}"
+    
+    # Install dependencies based on OS
+    case $OS in
+        debian|ubuntu)
+            install_debian
+            ;;
+        rhel|centos|fedora|rocky|almalinux)
+            install_rhel
+            ;;
+        alpine)
+            install_alpine
+            ;;
+        *)
+            print_error "Unsupported OS: $OS"
+            echo "Supported OS: Debian, Ubuntu, RHEL, CentOS, Fedora, Rocky, AlmaLinux, Alpine"
+            exit 1
+            ;;
+    esac
+    
+    # Check if installation was successful
+    if [ $? -eq 0 ]; then
+        print_success "Dependencies installed successfully"
+    else
+        print_error "Dependency installation failed"
+        exit 1
+    fi
+    
+    # Setup services
+    setup_services
+    
+    # Install Composer
     install_composer
-    clone_ctrlpanel
-    laravel_build
-    setup_ssl
-    setup_mariadb
-    setup_nginx
-    setup_permissions_and_cron
-    auto_setup_queue_service
-    auto_configure_env
-
-    echo ""
-    echo "==========================================="
-    echo " INSTALLATION COMPLETE "
-    echo "==========================================="
-    echo " URL: https://${DOMAIN}"
-    echo " Database: ${DB_NAME}"
-    echo " Database User: ${DB_USER}"
-    echo " Database Password: ${DB_PASS}"
-    echo ""
-    echo " IMPORTANT:"
-    echo " - Using self-signed SSL (you'll see browser warning)"
-    echo " - For production, install Let's Encrypt:"
-    echo "   sudo apt install certbot python3-certbot-nginx"
-    echo "   sudo certbot --nginx -d ${DOMAIN}"
-    echo "==========================================="
+    
+    # Setup application
+    setup_application
+    
+    # Setup database
+    setup_database
+    
+    # Setup application dependencies and permissions
+    setup_app_dependencies
+    
+    # Setup SSL certificates
+    if [ "$SSL_TYPE" != "skip" ]; then
+        setup_ssl
+    fi
+    
+    # Create nginx configuration
+    create_nginx_config
+    
+    # Setup cron jobs
+    setup_cron
+    
+    # Setup queue worker
+    setup_queue_worker
+    
+    # Finalize nginx
+    finalize_nginx
+    
+    # Display final information
+    display_info
 }
 
 # Run main function
-main "$@"
+main
