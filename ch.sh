@@ -3,31 +3,15 @@ set -euo pipefail
 
 DB_NAME="ctrlpanel"
 DB_USER="ctrlpaneluser"
+DB_PASS="ctrlpanelpass123"  # Default password
 
 echo ""
 echo ">>> CtrlPanel Installer Starting..."
 echo ""
 
-# Get domain/IP
 read -p "Enter your domain or IP: " DOMAIN
 echo "Using: $DOMAIN"
 echo ""
-
-# Get secure DB password
-read -s -p "Enter database password: " DB_PASS
-echo ""
-read -s -p "Confirm database password: " DB_PASS_CONFIRM
-echo ""
-
-if [ "$DB_PASS" != "$DB_PASS_CONFIRM" ]; then
-    echo "ERROR: Passwords do not match!"
-    exit 1
-fi
-
-if [ -z "$DB_PASS" ]; then
-    echo "ERROR: Database password cannot be empty!"
-    exit 1
-fi
 
 # ----------------------------------------------------
 # CLEANUP SURY ON NOBLE
@@ -157,15 +141,15 @@ laravel_build() {
 }
 
 # ----------------------------------------------------
-# SSL
+# SSL (Self-signed for initial setup)
 # ----------------------------------------------------
 setup_ssl() {
-    echo ">>> Setting up SSL certificates..."
+    echo ">>> Setting up temporary SSL certificates..."
     mkdir -p /etc/certs/ctrlpanel
     cd /etc/certs/ctrlpanel
 
-    # Generate better certificate info
-    openssl req -new -newkey rsa:4096 -nodes -days 3650 -x509 \
+    # Generate self-signed certificate for initial setup
+    openssl req -new -newkey rsa:4096 -nodes -days 365 -x509 \
         -subj "/C=US/ST=State/L=City/O=Organization/CN=${DOMAIN}" \
         -keyout privkey.pem -out fullchain.pem
     
@@ -208,10 +192,8 @@ EOF
 setup_nginx() {
     echo ">>> Configuring nginx..."
 
-    # Get PHP version for socket
-    PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;")
-    
-cat > /etc/nginx/sites-available/ctrlpanel.conf <<EOF
+    # Create nginx config
+    cat > /etc/nginx/sites-available/ctrlpanel.conf <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -225,29 +207,53 @@ server {
     root /var/www/ctrlpanel/public;
     index index.php;
 
+    access_log /var/log/nginx/ctrlpanel.app-access.log;
+    error_log  /var/log/nginx/ctrlpanel.app-error.log error;
+
+    # Allow large upload sizes
+    client_max_body_size 100m;
+    client_body_timeout 120s;
+
+    sendfile off;
+
+    # SSL Configuration - Using self-signed for initial setup
     ssl_certificate /etc/certs/ctrlpanel/fullchain.pem;
     ssl_certificate_key /etc/certs/ctrlpanel/privkey.pem;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+    ssl_prefer_server_ciphers on;
 
-    client_max_body_size 100m;
+    # Security headers
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header X-Robots-Tag none;
+    add_header Content-Security-Policy "frame-ancestors 'self'";
+    add_header X-Frame-Options DENY;
+    add_header Referrer-Policy same-origin;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
     location ~ \.php\$ {
-        fastcgi_pass unix:/run/php/php${PHP_VERSION}-fpm.sock;
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_index index.php;
         include fastcgi_params;
+        fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size=100M";
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY "";
         fastcgi_intercept_errors off;
         fastcgi_buffer_size 16k;
         fastcgi_buffers 4 16k;
+        fastcgi_connect_timeout 300;
+        fastcgi_send_timeout 300;
+        fastcgi_read_timeout 300;
+        include /etc/nginx/fastcgi_params;
     }
 
     location ~ /\.ht {
-        deny all;
-    }
-    
-    location ~ /\.env {
         deny all;
     }
 }
@@ -262,8 +268,12 @@ EOF
     echo ">>> Testing nginx configuration..."
     nginx -t || { echo "Nginx configuration test failed"; exit 1; }
     
+    # Enable and restart services
+    PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;")
     systemctl enable nginx php${PHP_VERSION}-fpm
     systemctl restart nginx php${PHP_VERSION}-fpm
+    
+    echo ">>> Nginx configuration completed"
 }
 
 # ----------------------------------------------------
@@ -298,7 +308,7 @@ auto_setup_queue_service() {
 
     PHP_BIN=$(command -v php)
 
-sudo tee /etc/systemd/system/ctrlpanel.service > /dev/null << EOF
+    cat > /etc/systemd/system/ctrlpanel.service <<EOF
 [Unit]
 Description=Ctrlpanel Queue Worker
 After=network.target mariadb.service redis-server.service
@@ -334,29 +344,47 @@ EOF
 }
 
 # ----------------------------------------------------
-# FINAL SETUP STEPS
+# AUTO CONFIGURE ENVIRONMENT
 # ----------------------------------------------------
-final_setup() {
-    echo ">>> Running final setup steps..."
+auto_configure_env() {
+    echo ">>> Auto-configuring environment..."
     cd /var/www/ctrlpanel
     
-    # Copy environment file
+    # Copy environment file if not exists
     if [ -f .env.example ] && [ ! -f .env ]; then
         cp .env.example .env
-        php artisan key:generate
+        echo ">>> Created .env file from example"
     fi
     
-    # Update .env with database credentials
+    # Update .env with actual values
     if [ -f .env ]; then
+        # Generate application key
+        php artisan key:generate --force
+        
+        # Update database configuration
         sed -i "s/DB_DATABASE=.*/DB_DATABASE=${DB_NAME}/" .env
         sed -i "s/DB_USERNAME=.*/DB_USERNAME=${DB_USER}/" .env
         sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASS}/" .env
         sed -i "s/APP_URL=.*/APP_URL=https:\/\/${DOMAIN}/" .env
-    fi
-    
-    # Run migrations if env file exists
-    if [ -f .env ]; then
-        php artisan migrate --force || echo "NOTE: Migrations may need to be run manually after additional configuration"
+        
+        # Set other important settings
+        sed -i "s/APP_ENV=.*/APP_ENV=production/" .env
+        sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
+        sed -i "s/QUEUE_CONNECTION=.*/QUEUE_CONNECTION=redis/" .env
+        
+        echo ">>> .env file configured"
+        
+        # Run migrations
+        echo ">>> Running database migrations..."
+        php artisan migrate --force --no-interaction
+        
+        # Clear cache
+        php artisan config:clear
+        php artisan cache:clear
+        
+        echo ">>> Environment setup completed"
+    else
+        echo ">>> WARNING: .env file not found, manual configuration required"
     fi
 }
 
@@ -383,7 +411,7 @@ main() {
     setup_nginx
     setup_permissions_and_cron
     auto_setup_queue_service
-    final_setup
+    auto_configure_env
 
     echo ""
     echo "==========================================="
@@ -392,12 +420,13 @@ main() {
     echo " URL: https://${DOMAIN}"
     echo " Database: ${DB_NAME}"
     echo " Database User: ${DB_USER}"
+    echo " Database Password: ${DB_PASS}"
     echo ""
-    echo " Next steps:"
-    echo " 1. Configure your .env file in /var/www/ctrlpanel"
-    echo " 2. Run: php artisan migrate --force"
-    echo " 3. Set up a real SSL certificate (Let's Encrypt)"
-    echo " 4. Configure your application settings"
+    echo " IMPORTANT:"
+    echo " - Using self-signed SSL (you'll see browser warning)"
+    echo " - For production, install Let's Encrypt:"
+    echo "   sudo apt install certbot python3-certbot-nginx"
+    echo "   sudo certbot --nginx -d ${DOMAIN}"
     echo "==========================================="
 }
 
