@@ -1,0 +1,13 @@
+{
+  "ssh": "true",
+  "autoApprovers": {},
+  "tagOwners": {
+    "tag:funnel": ["*"]
+  },
+  "nodeAttrs": [
+    {
+      "target": ["*"],
+      "attr": ["funnel"]
+    }
+  ]
+}
