@@ -204,77 +204,66 @@ EOF
     print_status "SUCCESS" "💾 Configuration saved to $config_file"
 }
 
-# Function to create new VM
+# Function to create new VM with categorized OS selection
 create_new_vm() {
     print_status "INFO" "🆕 Creating a new VM"
     
-    # OS Selection with pagination
-    local os_count=${#OS_OPTIONS[@]}
-    local page_size=15
-    local page=0
-    local total_pages=$(( (os_count + page_size - 1) / page_size ))
-    
+    # Categorized OS Selection
     while true; do
         display_header
-        print_status "INFO" "🌍 Select an OS to set up (Page $((page + 1))/$total_pages):"
+        print_status "INFO" "🌍 Select an OS Category:"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
-        local os_keys=("${!OS_OPTIONS[@]}")
-        local start=$((page * page_size))
-        local end=$((start + page_size - 1))
+        declare -A category_icons=(
+            ["ubuntu"]="🐧"
+            ["debian"]="🌀"
+            ["fedora"]="🎩"
+            ["centos"]="🔴"
+            ["rhel-clones"]="🏔️"
+            ["suse"]="🦎"
+            ["arch"]="🎯"
+            ["gentoo"]="🐃"
+            ["void"]="⚫"
+            ["alpine"]="⛰️"
+            ["nixos"]="❄️"
+            ["clearlinux"]="✨"
+            ["oracle"]="🗡️"
+            ["amazon"]="🌿"
+            ["bsd"]="😈"
+            ["container"]="📦"
+            ["desktop"]="🖥️"
+            ["security"]="🛡️"
+            ["lightweight"]="⚡"
+        )
         
-        if (( end >= os_count )); then
-            end=$((os_count - 1))
-        fi
-        
-        for ((i=start; i<=end; i++)); do
-            local os="${os_keys[$i]}"
-            printf "  %3d) %s\n" $((i+1)) "$os"
+        local category_index=1
+        declare -A category_map
+        for category in "${!OS_CATEGORIES[@]}"; do
+            local icon="${category_icons[$category]:-📁}"
+            printf "  %2d) %s %s (%d distributions)\n" "$category_index" "$icon" "$category" "$(echo "${OS_CATEGORIES[$category]}" | tr '|' '\n' | wc -l)"
+            category_map[$category_index]="$category"
+            ((category_index++))
         done
         
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📖 Navigation: q=Back to Main Menu"
         
-        if (( total_pages > 1 )); then
-            echo "📖 Navigation: n=Next Page, p=Previous Page, q=Back to Main Menu"
+        read -p "$(print_status "INPUT" "🎯 Enter category number: ")" category_choice
+        
+        if [[ "$category_choice" == "q" ]] || [[ "$category_choice" == "Q" ]]; then
+            return 1
         fi
         
-        read -p "$(print_status "INPUT" "🎯 Enter choice (1-$os_count, n/p/q): ")" choice
-        
-        case "$choice" in
-            [nN])
-                if (( page < total_pages - 1 )); then
-                    ((page++))
-                    continue
-                else
-                    print_status "INFO" "📄 Already on the last page"
-                    sleep 1
-                    continue
-                fi
-                ;;
-            [pP])
-                if (( page > 0 )); then
-                    ((page--))
-                    continue
-                else
-                    print_status "INFO" "📄 Already on the first page"
-                    sleep 1
-                    continue
-                fi
-                ;;
-            [qQ])
-                return 1
-                ;;
-            *)
-                if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $os_count ]; then
-                    local os="${os_keys[$((choice-1))]}"
-                    IFS='|' read -r OS_TYPE CODENAME IMG_URL DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD <<< "${OS_OPTIONS[$os]}"
-                    break
-                else
-                    print_status "ERROR" "❌ Invalid selection. Try again."
-                    sleep 2
-                fi
-                ;;
-        esac
+        if [[ "$category_choice" =~ ^[0-9]+$ ]] && [ "$category_choice" -ge 1 ] && [ "$category_choice" -le ${#OS_CATEGORIES[@]} ]; then
+            local selected_category="${category_map[$category_choice]}"
+            select_os_from_category "$selected_category"
+            if [ $? -eq 0 ]; then
+                break
+            fi
+        else
+            print_status "ERROR" "❌ Invalid selection. Try again."
+            sleep 2
+        fi
     done
 
     # Custom Inputs with validation
@@ -381,6 +370,52 @@ create_new_vm() {
     
     # Save configuration
     save_vm_config
+}
+
+# Function to select OS from category
+select_os_from_category() {
+    local category=$1
+    
+    # Get OS list for this category
+    IFS='|' read -ra os_list <<< "${OS_CATEGORIES[$category]}"
+    
+    # Display OS selection for this category
+    while true; do
+        display_header
+        local category_icon="${category_icons[$category]:-📁}"
+        print_status "INFO" "${category_icon} $category - Select Version:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        for i in "${!os_list[@]}"; do
+            local os_key="${os_list[$i]}"
+            local os_display="${OS_DISPLAY_NAMES[$os_key]:-$os_key}"
+            printf "  %2d) %s\n" $((i+1)) "$os_display"
+        done
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📖 Navigation: b=Back to Categories, q=Main Menu"
+        
+        read -p "$(print_status "INPUT" "🎯 Enter OS version number: ")" os_choice
+        
+        case "$os_choice" in
+            [bB])
+                return 1
+                ;;
+            [qQ])
+                return 2
+                ;;
+            *)
+                if [[ "$os_choice" =~ ^[0-9]+$ ]] && [ "$os_choice" -ge 1 ] && [ "$os_choice" -le ${#os_list[@]} ]; then
+                    local selected_os="${os_list[$((os_choice-1))]}"
+                    IFS='|' read -r OS_TYPE CODENAME IMG_URL DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD <<< "${OS_OPTIONS[$selected_os]}"
+                    return 0
+                else
+                    print_status "ERROR" "❌ Invalid selection. Try again."
+                    sleep 2
+                fi
+                ;;
+        esac
+    done
 }
 
 # Function to setup VM image
@@ -999,6 +1034,53 @@ search_os() {
     echo "${results[@]}"
 }
 
+# Function to show quick OS categories
+show_quick_categories() {
+    display_header
+    print_status "INFO" "⚡ Quick OS Selection:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Show popular categories first
+    local popular_categories=("ubuntu" "debian" "fedora" "centos" "arch" "alpine")
+    
+    for category in "${popular_categories[@]}"; do
+        if [[ -n "${OS_CATEGORIES[$category]}" ]]; then
+            local count=$(echo "${OS_CATEGORIES[$category]}" | tr '|' '\n' | wc -l)
+            local icon="${category_icons[$category]:-📁}"
+            printf "  %s %s (%d versions)\n" "$icon" "$category" "$count"
+            
+            # Show first 3 versions in this category
+            IFS='|' read -ra os_list <<< "${OS_CATEGORIES[$category]}"
+            for i in "${!os_list[@]}"; do
+                if [ $i -lt 3 ]; then
+                    local os_key="${os_list[$i]}"
+                    local os_display="${OS_DISPLAY_NAMES[$os_key]:-$os_key}"
+                    printf "     • %s\n" "$os_display"
+                fi
+            done
+            if [ ${#os_list[@]} -gt 3 ]; then
+                printf "     ... and %d more\n" $(( ${#os_list[@]} - 3 ))
+            fi
+            echo
+        fi
+    done
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    read -p "$(print_status "INPUT" "🎯 Press 1 for Full Categories, 2 for Search, Enter to go back: ")" quick_choice
+    
+    case $quick_choice in
+        1)
+            return 1  # Signal to show full categories
+            ;;
+        2)
+            return 2  # Signal to show search
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 # Main menu function
 main_menu() {
     while true; do
@@ -1031,6 +1113,7 @@ main_menu() {
             echo "  8) 📊 Show VM performance"
             echo "  9) 🔧 Fix VM issues"
         fi
+        echo "  Q) ⚡ Quick OS Select"
         echo "  S) 🔍 Search OS"
         echo "  L) 📋 List all available OS"
         echo "  0) 👋 Exit"
@@ -1122,6 +1205,30 @@ main_menu() {
                     fi
                 fi
                 ;;
+            [Qq])
+                show_quick_categories
+                case $? in
+                    1)
+                        # Show full categories by calling create_new_vm
+                        create_new_vm
+                        ;;
+                    2)
+                        # Show search
+                        display_header
+                        read -p "$(print_status "INPUT" "🔍 Search for OS (name or keyword): ")" search_query
+                        local results=($(search_os "$search_query"))
+                        if [ ${#results[@]} -gt 0 ]; then
+                            print_status "INFO" "🔍 Found ${#results[@]} matching OS:"
+                            for i in "${!results[@]}"; do
+                                echo "  $((i+1))) ${results[$i]}"
+                            done
+                        else
+                            print_status "INFO" "❌ No matching OS found"
+                        fi
+                        read -p "$(print_status "INPUT" "⏎ Press Enter to continue...")"
+                        ;;
+                esac
+                ;;
             [Ss])
                 display_header
                 read -p "$(print_status "INPUT" "🔍 Search for OS (name or keyword): ")" search_query
@@ -1141,21 +1248,17 @@ main_menu() {
                 print_status "INFO" "📋 Available Linux Distributions (${#OS_OPTIONS[@]} total):"
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 
-                # Group by distribution family
-                declare -A os_families
-                for os in "${!OS_OPTIONS[@]}"; do
-                    family=$(echo "${OS_OPTIONS[$os]}" | cut -d'|' -f1)
-                    os_families["$family"]+="$os"$'\n'
-                done
-                
-                for family in "${!os_families[@]}"; do
-                    echo "🎯 $family:"
-                    echo "$os_families[$family]" | sort | while read -r os; do
-                        if [ -n "$os" ]; then
-                            echo "    • $os"
-                        fi
+                # Group by categories
+                for category in "${!OS_CATEGORIES[@]}"; do
+                    local icon="${category_icons[$category]:-📁}"
+                    local count=$(echo "${OS_CATEGORIES[$category]}" | tr '|' '\n' | wc -l)
+                    printf "\n%s %s (%d):\n" "$icon" "$category" "$count"
+                    
+                    IFS='|' read -ra os_list <<< "${OS_CATEGORIES[$category]}"
+                    for os_key in "${os_list[@]}"; do
+                        local os_display="${OS_DISPLAY_NAMES[$os_key]:-$os_key}"
+                        echo "  • $os_display"
                     done
-                    echo
                 done
                 
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1185,192 +1288,182 @@ VM_DIR="${VM_DIR:-$HOME/vms}"
 mkdir -p "$VM_DIR"
 
 # ============================================================================
-# COMPLETE LINUX OS LIST - All Major Distributions
+# CATEGORIZED LINUX OS LIST
 # ============================================================================
-# Format: "OS Name|codename|image_url|default_vm_name|default_username|default_password"
+
+# First, define all OS options with their details
 declare -A OS_OPTIONS=(
     # Ubuntu Family
-    ["Ubuntu 18.04 LTS (Bionic Beaver)"]="ubuntu|bionic|https://cloud-images.ubuntu.com/bionic/current/bionic-server-cloudimg-amd64.img|ubuntu18|ubuntu|ubuntu"
-    ["Ubuntu 20.04 LTS (Focal Fossa)"]="ubuntu|focal|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img|ubuntu20|ubuntu|ubuntu"
-    ["Ubuntu 22.04 LTS (Jammy Jellyfish)"]="ubuntu|jammy|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu22|ubuntu|ubuntu"
-    ["Ubuntu 24.04 LTS (Noble Numbat)"]="ubuntu|noble|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|ubuntu24|ubuntu|ubuntu"
-    ["Ubuntu 24.10 (Oracular Oriole)"]="ubuntu|oracular|https://cloud-images.ubuntu.com/oracular/current/oracular-server-cloudimg-amd64.img|ubuntu24.10|ubuntu|ubuntu"
-    ["Ubuntu Minimal 22.04"]="ubuntu|jammy-minimal|https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-amd64.img|ubuntu22-minimal|ubuntu|ubuntu"
-    ["Ubuntu Server 24.04"]="ubuntu|noble-server|https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img|ubuntu24-server|ubuntu|ubuntu"
-
+    ["ubuntu-18.04"]="ubuntu|bionic|https://cloud-images.ubuntu.com/bionic/current/bionic-server-cloudimg-amd64.img|ubuntu18|ubuntu|ubuntu"
+    ["ubuntu-20.04"]="ubuntu|focal|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img|ubuntu20|ubuntu|ubuntu"
+    ["ubuntu-22.04"]="ubuntu|jammy|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu22|ubuntu|ubuntu"
+    ["ubuntu-24.04"]="ubuntu|noble|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|ubuntu24|ubuntu|ubuntu"
+    ["ubuntu-24.10"]="ubuntu|oracular|https://cloud-images.ubuntu.com/oracular/current/oracular-server-cloudimg-amd64.img|ubuntu24.10|ubuntu|ubuntu"
+    
     # Debian Family
-    ["Debian 10 (Buster)"]="debian|buster|https://cloud.debian.org/images/cloud/buster/latest/debian-10-generic-amd64.qcow2|debian10|debian|debian"
-    ["Debian 11 (Bullseye)"]="debian|bullseye|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2|debian11|debian|debian"
-    ["Debian 12 (Bookworm)"]="debian|bookworm|https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2|debian12|debian|debian"
-    ["Debian 13 (Trixie)"]="debian|trixie|https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.qcow2|debian13|debian|debian"
-    ["Debian Testing (Trixie)"]="debian|trixie-testing|https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.qcow2|debian-testing|debian|debian"
-    ["Debian Unstable (Sid)"]="debian|sid|https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-generic-amd64-daily.qcow2|debian-sid|debian|debian"
-
+    ["debian-11"]="debian|bullseye|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2|debian11|debian|debian"
+    ["debian-12"]="debian|bookworm|https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2|debian12|debian|debian"
+    ["debian-13"]="debian|trixie|https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-generic-amd64-daily.qcow2|debian13|debian|debian"
+    
     # Fedora Family
-    ["Fedora 38"]="fedora|38|https://download.fedoraproject.org/pub/fedora/linux/releases/38/Cloud/x86_64/images/Fedora-Cloud-Base-38-1.6.x86_64.qcow2|fedora38|fedora|fedora"
-    ["Fedora 39"]="fedora|39|https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2|fedora39|fedora|fedora"
-    ["Fedora 40"]="fedora|40|https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-40-1.14.x86_64.qcow2|fedora40|fedora|fedora"
-    ["Fedora 41"]="fedora|41|https://download.fedoraproject.org/pub/fedora/linux/development/41/Cloud/x86_64/images/Fedora-Cloud-Base-41-20240923.0.x86_64.qcow2|fedora41|fedora|fedora"
-    ["Fedora Rawhide"]="fedora|rawhide|https://download.fedoraproject.org/pub/fedora/linux/development/rawhide/Cloud/x86_64/images/Fedora-Cloud-Base-Rawhide-20240923.n.0.x86_64.qcow2|fedora-rawhide|fedora|fedora"
-    ["Fedora Silverblue 40"]="fedora|silverblue40|https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Silverblue-ostree-x86_64-40-1.14.qcow2|fedora-silverblue40|fedora|fedora"
-
+    ["fedora-38"]="fedora|38|https://download.fedoraproject.org/pub/fedora/linux/releases/38/Cloud/x86_64/images/Fedora-Cloud-Base-38-1.6.x86_64.qcow2|fedora38|fedora|fedora"
+    ["fedora-39"]="fedora|39|https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2|fedora39|fedora|fedora"
+    ["fedora-40"]="fedora|40|https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-40-1.14.x86_64.qcow2|fedora40|fedora|fedora"
+    
     # CentOS Family
-    ["CentOS Stream 8"]="centos|stream8|https://cloud.centos.org/centos/8-stream/x86_64/images/CentOS-Stream-GenericCloud-8-latest.x86_64.qcow2|centos8|centos|centos"
-    ["CentOS Stream 9"]="centos|stream9|https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2|centos9|centos|centos"
-    ["CentOS 7"]="centos|7|https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud.qcow2|centos7|centos|centos"
-
-    # AlmaLinux Family
-    ["AlmaLinux 8"]="almalinux|8|https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2|almalinux8|alma|alma"
-    ["AlmaLinux 9"]="almalinux|9|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|almalinux9|alma|alma"
-    ["AlmaLinux 10"]="almalinux|10|https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-beta-1.x86_64.qcow2|almalinux10|alma|alma"
-
-    # Rocky Linux Family
-    ["Rocky Linux 8"]="rockylinux|8|https://download.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud.latest.x86_64.qcow2|rocky8|rocky|rocky"
-    ["Rocky Linux 9"]="rockylinux|9|https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2|rocky9|rocky|rocky"
-    ["Rocky Linux 10"]="rockylinux|10|https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Beta.latest.x86_64.qcow2|rocky10|rocky|rocky"
-
-    # OpenSUSE Family
-    ["openSUSE Leap 15.5"]="opensuse|leap15.5|https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.5/images/openSUSE-Leap-15.5.x86_64-NoCloud.qcow2|opensuse-leap15.5|opensuse|opensuse"
-    ["openSUSE Leap 15.6"]="opensuse|leap15.6|https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2|opensuse-leap15.6|opensuse|opensuse"
-    ["openSUSE Tumbleweed"]="opensuse|tumbleweed|https://download.opensuse.org/repositories/Cloud:/Images:/openSUSE-Tumbleweed/images/openSUSE-Tumbleweed.x86_64-NoCloud.qcow2|opensuse-tumbleweed|opensuse|opensuse"
-    ["openSUSE MicroOS"]="opensuse|microos|https://download.opensuse.org/repositories/Cloud:/Images:/openSUSE-MicroOS/images/openSUSE-MicroOS.x86_64-NoCloud.qcow2|opensuse-microos|opensuse|opensuse"
-
-    # SUSE Linux Enterprise
-    ["SLE Micro 5.5"]="sle|micro5.5|https://download.suse.com/amd64/slemicro/5.5/slemicro.x86_64-5.5.0-BYOS.qcow2|sle-micro55|suse|linux"
-    ["SLE Micro 6.0"]="sle|micro6.0|https://download.suse.com/amd64/slemicro/6.0/slemicro.x86_64-6.0.0-BYOS.qcow2|sle-micro60|suse|linux"
-
-    # Arch Linux Family
-    ["Arch Linux"]="arch|latest|https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2|archlinux|arch|arch"
-    ["Arch Linux (Alternative)"]="arch|latest-alt|https://cloud.archlinux.org/images/latest/Arch-Linux-x86_64-cloudimg.qcow2|archlinux-alt|arch|arch"
-    ["Artix Linux"]="artix|latest|https://mirror.artixlinux.org/iso/cloud/artix-linux-openrc-cloudimg-x86_64.qcow2|artixlinux|artix|artix"
-
+    ["centos-7"]="centos|7|https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud.qcow2|centos7|centos|centos"
+    ["centos-8"]="centos|stream8|https://cloud.centos.org/centos/8-stream/x86_64/images/CentOS-Stream-GenericCloud-8-latest.x86_64.qcow2|centos8|centos|centos"
+    ["centos-9"]="centos|stream9|https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2|centos9|centos|centos"
+    
+    # RHEL Clones
+    ["almalinux-8"]="almalinux|8|https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2|almalinux8|alma|alma"
+    ["almalinux-9"]="almalinux|9|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|almalinux9|alma|alma"
+    ["rockylinux-8"]="rockylinux|8|https://download.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud.latest.x86_64.qcow2|rocky8|rocky|rocky"
+    ["rockylinux-9"]="rockylinux|9|https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2|rocky9|rocky|rocky"
+    
+    # SUSE Family
+    ["opensuse-leap-15.6"]="opensuse|leap15.6|https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2|opensuse-leap15.6|opensuse|opensuse"
+    ["opensuse-tumbleweed"]="opensuse|tumbleweed|https://download.opensuse.org/repositories/Cloud:/Images:/openSUSE-Tumbleweed/images/openSUSE-Tumbleweed.x86_64-NoCloud.qcow2|opensuse-tumbleweed|opensuse|opensuse"
+    
+    # Arch Family
+    ["arch-linux"]="arch|latest|https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2|archlinux|arch|arch"
+    
     # Gentoo Family
-    ["Gentoo (Generic Cloud)"]="gentoo|latest|https://gentoo.osuosl.org/experimental/amd64/openstack/gentoo-openstack-amd64-latest.qcow2|gentoo|gentoo|gentoo"
-    ["Gentoo (Systemd)"]="gentoo|systemd|https://gentoo.osuosl.org/experimental/amd64/openstack/gentoo-openstack-systemd-amd64-latest.qcow2|gentoo-systemd|gentoo|gentoo"
-
+    ["gentoo"]="gentoo|latest|https://gentoo.osuosl.org/experimental/amd64/openstack/gentoo-openstack-amd64-latest.qcow2|gentoo|gentoo|gentoo"
+    
     # Void Linux
-    ["Void Linux (musl)"]="void|musl|https://repo-default.voidlinux.org/live/current/void-x86_64-musl-ROOTFS-20241001.tar.xz|void-musl|void|voidlinux"
-    ["Void Linux (glibc)"]="void|glibc|https://repo-default.voidlinux.org/live/current/void-x86_64-ROOTFS-20241001.tar.xz|void-glibc|void|voidlinux"
-
+    ["void-linux"]="void|musl|https://repo-default.voidlinux.org/live/current/void-x86_64-musl-ROOTFS-20241001.tar.xz|void-musl|void|voidlinux"
+    
     # Alpine Linux
-    ["Alpine Linux 3.18"]="alpine|3.18|https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-standard-3.18.0-x86_64.iso|alpine318|alpine|alpine"
-    ["Alpine Linux 3.19"]="alpine|3.19|https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-standard-3.19.0-x86_64.iso|alpine319|alpine|alpine"
-    ["Alpine Linux 3.20"]="alpine|3.20|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-standard-3.20.0-x86_64.iso|alpine320|alpine|alpine"
-    ["Alpine Linux Edge"]="alpine|edge|https://dl-cdn.alpinelinux.org/alpine/edge/releases/x86_64/alpine-standard-edge-x86_64.iso|alpine-edge|alpine|alpine"
-
+    ["alpine-3.19"]="alpine|3.19|https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-standard-3.19.0-x86_64.iso|alpine319|alpine|alpine"
+    ["alpine-3.20"]="alpine|3.20|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-standard-3.20.0-x86_64.iso|alpine320|alpine|alpine"
+    
     # NixOS
-    ["NixOS 24.05"]="nixos|24.05|https://channels.nixos.org/nixos-24.05/latest-nixos-minimal-x86_64-linux.iso|nixos-2405|nixos|nixos"
-    ["NixOS Unstable"]="nixos|unstable|https://channels.nixos.org/nixos-unstable/latest-nixos-minimal-x86_64-linux.iso|nixos-unstable|nixos|nixos"
-
+    ["nixos-24.05"]="nixos|24.05|https://channels.nixos.org/nixos-24.05/latest-nixos-minimal-x86_64-linux.iso|nixos-2405|nixos|nixos"
+    
     # Clear Linux
-    ["Clear Linux"]="clearlinux|latest|https://cdn.download.clearlinux.org/releases/current/clear/clear-cloudguest.img.xz|clearlinux|clear|clear"
-
+    ["clearlinux"]="clearlinux|latest|https://cdn.download.clearlinux.org/releases/current/clear/clear-cloudguest.img.xz|clearlinux|clear|clear"
+    
     # Oracle Linux
-    ["Oracle Linux 7"]="oracle|7|https://yum.oracle.com/templates/OracleLinux/OL7/u7/x86_64/OL7U7_x86_64-kvm-b139.qcow2|oracle7|oracle|oracle"
-    ["Oracle Linux 8"]="oracle|8|https://yum.oracle.com/templates/OracleLinux/OL8/u8/x86_64/OL8U8_x86_64-kvm-b283.qcow2|oracle8|oracle|oracle"
-    ["Oracle Linux 9"]="oracle|9|https://yum.oracle.com/templates/OracleLinux/OL9/u1/x86_64/OL9U1_x86_64-kvm-b287.qcow2|oracle9|oracle|oracle"
-
+    ["oracle-8"]="oracle|8|https://yum.oracle.com/templates/OracleLinux/OL8/u8/x86_64/OL8U8_x86_64-kvm-b283.qcow2|oracle8|oracle|oracle"
+    ["oracle-9"]="oracle|9|https://yum.oracle.com/templates/OracleLinux/OL9/u1/x86_64/OL9U1_x86_64-kvm-b287.qcow2|oracle9|oracle|oracle"
+    
     # Amazon Linux
-    ["Amazon Linux 2023"]="amazon|2023|https://cdn.amazonlinux.com/al2023/releases/cloud/2023.0.20240219.0/x86_64/AmazonLinux2023-kvm-2023.0.20240219.0.x86_64.qcow2|amazon2023|ec2-user|ec2-user"
-    ["Amazon Linux 2"]="amazon|2|https://cdn.amazonlinux.com/os-images/2.0.20240220.0/kvm/amzn2-kvm-2.0.20240220.0-x86_64.xfs.gpt.qcow2|amazon2|ec2-user|ec2-user"
+    ["amazon-2023"]="amazon|2023|https://cdn.amazonlinux.com/al2023/releases/cloud/2023.0.20240219.0/x86_64/AmazonLinux2023-kvm-2023.0.20240219.0.x86_64.qcow2|amazon2023|ec2-user|ec2-user"
+    
+    # BSD Family
+    ["freebsd-14.1"]="freebsd|14.1|https://download.freebsd.org/ftp/releases/VM-IMAGES/14.1-RELEASE/amd64/Latest/FreeBSD-14.1-RELEASE-amd64.qcow2.xz|freebsd14|root|freebsd"
+    
+    # Container Linux
+    ["flatcar-stable"]="flatcar|stable|https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_production_qemu_image.img.bz2|flatcar-stable|core|core"
+    
+    # Desktop Distributions
+    ["popos-22.04"]="popos|22.04|https://iso.pop-os.org/22.04/amd64/intel/27/pop-os_22.04_amd64_intel_27.iso|popos22|pop|pop"
+    
+    # Security-Focused
+    ["kali-2024.2"]="kali|2024.2|https://cdimage.kali.org/kali-2024.2/kali-linux-2024.2-installer-amd64.iso|kali2024|kali|kali"
+    
+    # Lightweight
+    ["alpine-3.20-minimal"]="alpine|3.20-minimal|https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.0-x86_64.tar.gz|alpine-minimal|alpine|alpine"
+)
 
-    # FreeBSD
-    ["FreeBSD 13.3"]="freebsd|13.3|https://download.freebsd.org/ftp/releases/VM-IMAGES/13.3-RELEASE/amd64/Latest/FreeBSD-13.3-RELEASE-amd64.qcow2.xz|freebsd13|root|freebsd"
-    ["FreeBSD 14.1"]="freebsd|14.1|https://download.freebsd.org/ftp/releases/VM-IMAGES/14.1-RELEASE/amd64/Latest/FreeBSD-14.1-RELEASE-amd64.qcow2.xz|freebsd14|root|freebsd"
+# Display names for better readability
+declare -A OS_DISPLAY_NAMES=(
+    # Ubuntu
+    ["ubuntu-18.04"]="Ubuntu 18.04 LTS (Bionic Beaver)"
+    ["ubuntu-20.04"]="Ubuntu 20.04 LTS (Focal Fossa)"
+    ["ubuntu-22.04"]="Ubuntu 22.04 LTS (Jammy Jellyfish)"
+    ["ubuntu-24.04"]="Ubuntu 24.04 LTS (Noble Numbat)"
+    ["ubuntu-24.10"]="Ubuntu 24.10 (Oracular Oriole)"
+    
+    # Debian
+    ["debian-11"]="Debian 11 (Bullseye)"
+    ["debian-12"]="Debian 12 (Bookworm)"
+    ["debian-13"]="Debian 13 (Trixie)"
+    
+    # Fedora
+    ["fedora-38"]="Fedora 38"
+    ["fedora-39"]="Fedora 39"
+    ["fedora-40"]="Fedora 40"
+    
+    # CentOS
+    ["centos-7"]="CentOS 7"
+    ["centos-8"]="CentOS Stream 8"
+    ["centos-9"]="CentOS Stream 9"
+    
+    # RHEL Clones
+    ["almalinux-8"]="AlmaLinux 8"
+    ["almalinux-9"]="AlmaLinux 9"
+    ["rockylinux-8"]="Rocky Linux 8"
+    ["rockylinux-9"]="Rocky Linux 9"
+    
+    # SUSE
+    ["opensuse-leap-15.6"]="openSUSE Leap 15.6"
+    ["opensuse-tumbleweed"]="openSUSE Tumbleweed"
+    
+    # Arch
+    ["arch-linux"]="Arch Linux"
+    
+    # Gentoo
+    ["gentoo"]="Gentoo Linux"
+    
+    # Void
+    ["void-linux"]="Void Linux (musl)"
+    
+    # Alpine
+    ["alpine-3.19"]="Alpine Linux 3.19"
+    ["alpine-3.20"]="Alpine Linux 3.20"
+    
+    # NixOS
+    ["nixos-24.05"]="NixOS 24.05"
+    
+    # Clear Linux
+    ["clearlinux"]="Clear Linux"
+    
+    # Oracle
+    ["oracle-8"]="Oracle Linux 8"
+    ["oracle-9"]="Oracle Linux 9"
+    
+    # Amazon
+    ["amazon-2023"]="Amazon Linux 2023"
+    
+    # BSD
+    ["freebsd-14.1"]="FreeBSD 14.1"
+    
+    # Container
+    ["flatcar-stable"]="Flatcar Container Linux (Stable)"
+    
+    # Desktop
+    ["popos-22.04"]="Pop!_OS 22.04 LTS"
+    
+    # Security
+    ["kali-2024.2"]="Kali Linux 2024.2"
+    
+    # Lightweight
+    ["alpine-3.20-minimal"]="Alpine Linux 3.20 (Minimal)"
+)
 
-    # NetBSD
-    ["NetBSD 10.0"]="netbsd|10.0|https://cdn.netbsd.org/pub/NetBSD/NetBSD-10.0/images/NetBSD-10.0-amd64.qcow2|netbsd10|root|netbsd"
-    ["NetBSD 9.3"]="netbsd|9.3|https://cdn.netbsd.org/pub/NetBSD/NetBSD-9.3/images/NetBSD-9.3-amd64.qcow2|netbsd9|root|netbsd"
-
-    # OpenBSD
-    ["OpenBSD 7.4"]="openbsd|7.4|https://cdn.openbsd.org/pub/OpenBSD/7.4/amd64/openbsd-7.4-amd64.qcow2|openbsd74|root|openbsd"
-    ["OpenBSD 7.5"]="openbsd|7.5|https://cdn.openbsd.org/pub/OpenBSD/7.5/amd64/openbsd-7.5-amd64.qcow2|openbsd75|root|openbsd"
-
-    # DragonFly BSD
-    ["DragonFly BSD 6.4"]="dragonfly|6.4|https://mirror-master.dragonflybsd.org/iso-images/dfly-x86_64-6.4.0_REL.img.gz|dragonfly64|root|dragonfly"
-
-    # Container Linux (Flatcar)
-    ["Flatcar Stable"]="flatcar|stable|https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_production_qemu_image.img.bz2|flatcar-stable|core|core"
-    ["Flatcar Beta"]="flatcar|beta|https://beta.release.flatcar-linux.net/amd64-usr/current/flatcar_production_qemu_image.img.bz2|flatcar-beta|core|core"
-    ["Flatcar Alpha"]="flatcar|alpha|https://alpha.release.flatcar-linux.net/amd64-usr/current/flatcar_production_qemu_image.img.bz2|flatcar-alpha|core|core"
-
-    # RHEL Family (Requires subscription)
-    ["RHEL 8.8"]="rhel|8.8|https://access.redhat.com/downloads/content/479/ver=/rhel---8/8.8/x86_64/product-software|rhel88|redhat|redhat"
-    ["RHEL 9.2"]="rhel|9.2|https://access.redhat.com/downloads/content/480/ver=/rhel---9/9.2/x86_64/product-software|rhel92|redhat|redhat"
-
-    # Scientific Linux (Discontinued but available)
-    ["Scientific Linux 7"]="scientific|7|https://ftp.scientificlinux.org/linux/scientific/7.9/x86_64/images/SL-7.9-x86_64-GenericCloud.qcow2|scientific7|root|scientific"
-
-    # Manjaro Linux
-    ["Manjaro Linux"]="manjaro|latest|https://osdn.net/projects/manjaro/storage/kde/22.1.6/manjaro-kde-22.1.6-230616-linux61.iso|manjaro|manjaro|manjaro"
-
-    # elementary OS
-    ["elementary OS 7.1"]="elementary|7.1|https://github.com/elementary/os/releases/download/7.1-stable/elementaryos-7.1-stable.20231214.iso|elementary71|elementary|elementary"
-
-    # Zorin OS
-    ["Zorin OS 17"]="zorin|17|https://github.com/ZorinOS/zorin-os/releases/download/zorin-17/Zorin-OS-17-Core-64-bit.iso|zorin17|zorin|zorin"
-
-    # Pop!_OS
-    ["Pop!_OS 22.04 LTS"]="popos|22.04|https://iso.pop-os.org/22.04/amd64/intel/27/pop-os_22.04_amd64_intel_27.iso|popos22|pop|pop"
-
-    # Mint Linux
-    ["Linux Mint 21.3"]="mint|21.3|https://mirrors.edge.kernel.org/linuxmint/stable/21.3/linuxmint-21.3-cinnamon-64bit.iso|mint213|mint|mint"
-
-    # Kali Linux
-    ["Kali Linux 2024.2"]="kali|2024.2|https://cdimage.kali.org/kali-2024.2/kali-linux-2024.2-installer-amd64.iso|kali2024|kali|kali"
-
-    # Parrot OS
-    ["Parrot OS 6.0"]="parrot|6.0|https://deb.parrot.sh/parrot/iso/6.0/Parrot-security-6.0_amd64.iso|parrot60|parrot|parrot"
-
-    # BlackArch Linux
-    ["BlackArch Linux"]="blackarch|latest|https://mirror.rackspace.com/blackarch/iso/blackarch-linux-full-2024.09.01-x86_64.iso|blackarch|root|blackarch"
-
-    # Tails
-    ["Tails 6.0"]="tails|6.0|https://tails.net/install/vm/Tails_amd64-6.0.vdi|tails60|amnesia|amnesia"
-
-    # Whonix
-    ["Whonix Gateway 17"]="whonix|gateway17|https://download.whonix.org/linux/17/Whonix-Gateway-17.0.0.0.libvirt.xz|whonix-gateway|user|changeme"
-    ["Whonix Workstation 17"]="whonix|workstation17|https://download.whonix.org/linux/17/Whonix-Workstation-17.0.0.0.libvirt.xz|whonix-workstation|user|changeme"
-
-    # Qubes OS
-    ["Qubes OS 4.2"]="qubes|4.2|https://mirrors.edge.kernel.org/qubes/iso/Qubes-R4.2.0-x86_64.iso|qubes42|user|qubes"
-
-    # Trisquel
-    ["Trisquel 11.0"]="trisquel|11.0|https://mirror.fsf.org/trisquel-images/trisquel_11.0_amd64.iso|trisquel11|trisquel|trisquel"
-
-    # PureOS
-    ["PureOS 10.0"]="pureos|10.0|https://cdn.puri.sm/pureos/amber/pureos-10.0-amd64.hybrid.iso|pureos10|pureos|pureos"
-
-    # Devuan
-    ["Devuan 5.0"]="devuan|5.0|https://files.devuan.org/devuan_daedalus/cloud/devuan_daedalus_5.0.0_amd64_qcow2.img.xz|devuan50|devuan|devuan"
-    ["Devuan 4.0"]="devuan|4.0|https://files.devuan.org/devuan_chimaera/cloud/devuan_chimaera_4.0.0_amd64_qcow2.img.xz|devuan40|devuan|devuan"
-
-    # Slackware
-    ["Slackware 15.0"]="slackware|15.0|https://mirrors.slackware.com/slackware/slackware-iso/slackware64-15.0-iso/slackware64-15.0-install-dvd.iso|slackware15|root|slackware"
-
-    # Tiny Core Linux
-    ["Tiny Core Linux 15.0"]="tinycore|15.0|http://tinycorelinux.net/15.x/x86_64/release/TinyCorePure64-15.0.iso|tinycore15|tc|tc"
-
-    # Puppy Linux
-    ["Puppy Linux FossaPup64 9.5"]="puppy|fossapup64-9.5|http://distro.ibiblio.org/puppylinux/puppy-fossa/fossapup64-9.5.iso|puppy-fossapup|root|root"
-
-    # Damn Small Linux
-    ["Damn Small Linux 4.11"]="dsl|4.11|http://distro.ibiblio.org/damnsmall/current/dsl-4.11.rc2.iso|dsl411|root|root"
-
-    # Porteus
-    ["Porteus 5.0"]="porteus|5.0|https://download.porteus.org/x86_64/Porteus-KDE-v5.0-x86_64.iso|porteus5|guest|guest"
-
-    # Slax
-    ["Slax 15.0.1"]="slax|15.0.1|https://download.slax.org/slax-64bit-15.0.1.iso|slax15|root|toor"
-
-    # Absolute Linux
-    ["Absolute Linux 20240901"]="absolute|20240901|https://absolute-linux.org/downloads/absolute64-20240901.iso|absolute64|root|root"
-
-    # Calculate Linux
-    ["Calculate Linux 23"]="calculate|23|https://mirror.calculate-linux.org/calculate/23/calculate-linux-cld-23-x86_64.iso|calculate23|root|calculate"
-
-    # Container-Optimized OS
-    ["Container-Optimized OS (COS)"]="cos|stable|https://storage.googleapis.com/cos-tools/stable/cos-stable.img|cos-stable|chronos|chronos"
+# Categorized OS lists (using | as separator)
+declare -A OS_CATEGORIES=(
+    ["ubuntu"]="ubuntu-18.04|ubuntu-20.04|ubuntu-22.04|ubuntu-24.04|ubuntu-24.10"
+    ["debian"]="debian-11|debian-12|debian-13"
+    ["fedora"]="fedora-38|fedora-39|fedora-40"
+    ["centos"]="centos-7|centos-8|centos-9"
+    ["rhel-clones"]="almalinux-8|almalinux-9|rockylinux-8|rockylinux-9"
+    ["suse"]="opensuse-leap-15.6|opensuse-tumbleweed"
+    ["arch"]="arch-linux"
+    ["gentoo"]="gentoo"
+    ["void"]="void-linux"
+    ["alpine"]="alpine-3.19|alpine-3.20|alpine-3.20-minimal"
+    ["nixos"]="nixos-24.05"
+    ["clearlinux"]="clearlinux"
+    ["oracle"]="oracle-8|oracle-9"
+    ["amazon"]="amazon-2023"
+    ["bsd"]="freebsd-14.1"
+    ["container"]="flatcar-stable"
+    ["desktop"]="popos-22.04"
+    ["security"]="kali-2024.2"
+    ["lightweight"]="alpine-3.20-minimal"
 )
 
 # ============================================================================
